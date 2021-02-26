@@ -25,4 +25,4 @@
 #       should be calling stubby-smash.1.sh (or later) directly; if you need
 #       SBAT support, you MUST call stubby-smash.1.sh directly
 
-exec stubby-smash.1.sh -k $1 -i $2 -c $3 -o $4
+exec ./stubby-smash.1.sh -k $1 -i $2 -c $3 -o $4
