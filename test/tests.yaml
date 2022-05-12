@@ -1,0 +1,49 @@
+tests:
+  - name: "sb-shim-allowed"
+    sb: true
+    shim: true
+    builtin: ""
+    cli: "root=atomix console=ttyS0"
+    assert:
+      - booted-cmdline-cli
+
+  - name: "sb-noshim-allowed"
+    sb: true
+    shim: false
+    builtin: ""
+    cli: "root=atomix console=ttyS0"
+    assert:
+      - booted-cmdline-cli
+
+  - name: "ib-shim-allowed"
+    sb: true
+    shim: true
+    builtin: ""
+    cli: "root=atomix console=ttyS0"
+    assert:
+      - booted-cmdline-cli
+
+  - name: "ib-noshim-allowed"
+    sb: false
+    shim: false
+    builtin: ""
+    cli: "root=atomix console=ttyS0"
+    assert:
+      - booted-cmdline-cli
+
+  - name: "sb-shim-denied"
+    sb: true
+    shim: true
+    builtin: ""
+    cli: "root=atomix console=ttyS0 rootkit=yes"
+    assert:
+      - denied-boot
+
+  - name: "ib-shim-denied"
+    sb: false
+    shim: true
+    builtin: ""
+    cli: "root=atomix console=ttyS0 rootkit=yes"
+    assert:
+      - warned-cmdline
+      - booted-cmdline-cli
