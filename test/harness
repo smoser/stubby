@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+import argparse
+import logging
+import os.path
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import tempfile
+import time
+import yaml
+
+TMP_PREFIX = "stubbytest."
+
+
+def booted_cmdline_cli(name, testdata, log):
+    """Validate that linux's /proc/cmdline should be identical to testdata[cli]"""
+    print(f"Checking {name}\n")
+
+
+def warned_cmdline(name, testdata, log):
+    """Validate that stubby wrote a warning before loading kernel."""
+    print(f"Checking %{name}\n")
+
+
+def denied_boot(name, testdata, log):
+    """Validate that stubby refused to boot"""
+    print("denied boot test")
+
+
+def load_test_data(testfile):
+    with open(testfile, "r", encoding="utf-8") as fp:
+        testdata = yaml.safe_load(fp.read())
+
+    if not isinstance(testdata, dict):
+        raise ValueError(f"top level entry in test data from {testfile} is not a dict")
+
+    fields = {
+        "sb": bool,
+        "shim": bool,
+        "builtin": str,
+        "cli": str,
+        "assert": list,
+        "name": str,
+    }
+
+    errors = []
+    tests = []
+    if 'tests' in testdata:
+        tests = testdata['tests']
+    else:
+        errors.append(f"No 'tests' key found in {testfile}")
+
+    names = set()
+    for tnum, td in enumerate(tests):
+        name = td.get("name")
+        if name == "" or name is None:
+            errors.append(f"test number {tnum} has no name")
+            continue
+        if name in names:
+            errors.append(f"name {name} appears multiple times (num {tnum})")
+        for fname, ftype in fields.items():
+            if fname not in td:
+                errors.append(f"{name}: missing field {fname}")
+            elif not isinstance(td.get(fname), ftype):
+                found = td.get(fname).__class__.__name__
+                errors.append(f"{name}: {fname}: is type '{found}', expected {ftype}")
+
+        for n, assertion in enumerate(td.get("assert", [])):
+            if assertion not in CHECKS:
+                errors.append("{name}: assertion {n} ({assertion}) is invalid")
+
+    if len(errors):
+        raise ValueError(
+            ("Errors validating test data in " + testfile + ":\n  " +
+              "\n  ".join(errors) + "\n"))
+
+    return testdata
+
+
+CHECKS = {
+    "booted-cmdline-cli": booted_cmdline_cli,
+    "warned-cmdline": warned_cmdline,
+    "denied-boot": denied_boot,
+}
+
+
+def first_file(*files):
+    for fname in files:
+        if os.path.exists(fname):
+            return fname
+    return None
+
+
+class SubpResult():
+    cmd, data, duration, exception = (None, None, None, None)
+    out, err = (b'', b'')
+    rc = -1
+
+    def __init__(self, **kwargs):
+        bad = ','.join([k for k in kwargs if not hasattr(self, k)])
+        if bad:
+            raise AttributeError(
+                f"{self.__class__.__name__} object has no attributes: {bad}")
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def __str__(self):
+        def indent(name, data):
+            if data is None:
+                return "{name}: {data}"
+
+            if hasattr(data, 'decode'):
+                data = data.decode('utf-8', errors='ignore')
+
+            return "%s: %s" % (
+                name,
+                ''.join(["  " + line + "\n" for line in data.splitlines()]))
+
+        return '\n'.join([
+            "cmd: %s" % '' if not self.cmd else shell_quote(self.cmd),
+            "rc: {self.rc}",
+            "duration: %.2fs" % self.duration,
+            "exc: %s" % self.exception,
+            indent("stdout", self.out),
+            indent("stderr", self.err),
+            ""])
+
+
+class SubpError(Exception):
+    def __init__(self, result, desc=None):
+        super(SubpError, self).__init__(desc)
+        self.desc = desc
+        self.result = result
+
+    def __str__(self):
+        ret = "" if not self.desc else "desc: %s\n" % self.desc
+        ret += "" if not self.result.exception else "exception: %s\n" % self.result.exception
+        return ret + str(self.result)
+
+
+def shell_quote(cmd):
+    return ' '.join(shlex.quote(a) for a in cmd)
+
+
+def subp(cmd, capture=True, data=None, rcs=None, timeout=None, signal=signal.SIGTERM):
+    if isinstance(rcs, int):
+        rcs = (rcs,)
+
+    # allow user to pass in a string as data
+    if hasattr(data, 'encode'):
+        data = data.encode('utf-8')
+
+    devnull_fp = None
+    stdin = subprocess.PIPE
+    stdout, stderr = (None, None)
+    if capture:
+        stdout, stderr = (subprocess.PIPE, subprocess.PIPE)
+
+    result = SubpResult(cmd=cmd, rc=-1)
+    start = time.time()
+    try:
+        if data is None:
+            # devnull ensures any read gets null and wont ever block.
+            devnull_fp = open(os.devnull)
+            stdin = devnull_fp
+
+        logging.debug("Executing: %s", shell_quote(cmd))
+        sp = subprocess.Popen(
+            cmd, stdout=stdout, stderr=stderr, stdin=stdin)
+
+        def communicate():
+            try:
+                (result.out, result.err) = sp.communicate(data)
+            except Exception as e:
+                result.exception = e
+
+        if timeout is not None and signal != signal.SIGKILL:
+            thread = threading.Thread(target=communicate)
+            thread.start()
+            thread.join(timeout)
+            if thread.is_alive():
+                sp.send_signal(signal)
+                thread.join()
+                result.exception = subprocess.TimeoutExpired(cmd=cmd, timeout=timeout)
+        else:
+            communicate()
+
+        result.rc = sp.returncode
+
+        if not result.out:
+            result.out = b''
+        if not result.err:
+            result.err = b''
+
+    finally:
+        result.duration = time.time() - start
+        if devnull_fp:
+            devnull_fp.close()
+
+    logging.debug("returned %d took %.2fs", result.rc, result.duration)
+    if rcs is None or result.rc in rcs:
+        return result
+    else:
+        raise SubpError(result)
+
+
+def _check_run_args(cliargs):
+    checks = (
+        ("kernel", "kernel", None),
+        ("initrd", "initrd", None),
+        ("stubby", "stubby.efi", None),
+        ("shim", "shim.efi",
+            lambda: first_file("/usr/lib/shim/shimx64.efi")),
+        ("signing_key", "signing.key",
+            lambda: first_file("/usr/share/ovmf/PkKek-1-snakeoil.key")),
+        ("signing_cert", "signing.pem",
+            lambda: first_file("/usr/share/ovmf/PkKek-1-snakeoil.pem")),
+        ("ovmf_code", "ovmf-code.fd",
+            lambda: first_file(
+                "/usr/share/OVMF/OVMF_CODE_4M.snakeoil.fd",
+                "/usr/share/OVMF/OVMF_CODE.fd")),
+        ("ovmf_vars_secure", "ovmf-vars-secure.fd",
+            lambda: first_file(
+                "/usr/share/OVMF/OVMF_VARS.snakeoil.fd",
+                "/usr/share/OVMF/OVMF_VARS_4M.snakeoil.fd")),
+    )
+
+    errors = []
+    idir = cliargs.inputs_dir
+    if idir is not None:
+        idir = os.path.normpath(cliargs.inputs_dir)
+
+    for (argname, fname, searcher) in checks:
+        argval = getattr(cliargs, argname)
+        if argval is not None:
+            continue
+        if idir is not None:
+            fpath = os.path.sep.join((idir, fname))
+            if os.path.exists(fpath):
+                setattr(cliargs, argname, fpath)
+                continue
+        if searcher is not None:
+            fpath = searcher()
+            if fpath is not None:
+                setattr(cliargs, argname, fpath)
+                continue
+        errors.append("did not find value for " + fname)
+
+    # for these paths, we know passwords.
+    known_passwords = {
+        "/usr/share/ovmf/PkKek-1-snakeoil.key": "snakeoil",
+    }
+    # signing_pass is either a file in <idir>/signing.password or password as a string.
+    if cliargs.signing_pass is None:
+        if idir is not None:
+            fpath = os.path.sep.join((idir, "signing.password"))
+            if os.path.exists(fpath):
+                with open(fpath, "r") as fp:
+                    cliargs.signing_pass = fp.read().strip()
+        if cliargs.signing_pass is None:
+            cliargs.signing_pass = known_passwords.get(cliargs.signing_key)
+        if cliargs.signing_pass is None:
+            cliargs.signing_pass = ""
+
+    return errors
+
+
+def _add_run_args(s):
+    runargs = (
+        (("-I", "--inputs-dir"),
+         {"action": "store", "help": "test inputs directory"}),
+        (("-k", "--kernel"),
+         {"action": "store", "help": "linux kernel [<inputs>/kernel]"}),
+        (("-i", "--initrd"),
+         {"action": "store", "help": "linux initramfs [<inputs>/initrd]"}),
+        (("-S", "--shim"),
+         {"action": "store", "help": "shim.efi [<inputs>/shim.efi]"}),
+        (("-s", "--stubby"),
+         {"action": "store", "help": "stubby [<inputs>/stubby.efi]"}),
+        (("--signing-key",),
+         {"action": "store", "help": "signing key [<inputs>/signing.key]"}),
+        (("--signing-cert",),
+         {"action": "store",
+          "help": "signing certificate [<inputs>/signing.pem]"}),
+        (("--signing-pass",),
+         {"action": "store",
+          "help": "password for the signing key [<inputs>/signing.password]"}),
+        (("--ovmf-code",),
+         {"action": "store", "help": "ovmf-code [<inputs>/ovmf-code.fd]"}),
+        (("--ovmf-vars-secure",),
+         {"action": "store",
+          "help": (
+              "ovmf-vars for secure boot. Must allow execution of code signed"
+              "by provided signing-key [<inputs>/ovmf-vars-secure.fd]")}),
+        (("--ovmf-vars-insecure",),
+         {"action": "store",
+          "help": (
+              "ovmf-vars for insecure boot. "
+              "[<inputs>/ovmf-vars-insecure.fd]")}),
+    )
+
+    for args, kwargs in runargs:
+        s.add_argument(*args, **kwargs)
+
+
+def decrypt_key(encrypted, secret, output):
+    subp(["openssl", "rsa", "-in", encrypted, "-out",
+          output, "-passin", "stdin"], data=secret)
+
+
+def sign_efi(key, cert, unsigned, signed):
+    subp(["sbsign", "--key=" + key, "--cert=" + cert,
+          "--output=" + signed, unsigned])
+
+
+class Runner:
+    def __init__(self, cliargs, workdir=None):
+        self.cleanup_workdir = False
+        self.workdir = workdir
+        if self.workdir is None:
+            self.workdir = tempfile.mkdtemp(prefix=TMP_PREFIX)
+
+        self.testinfo = load_test_data(cliargs.testdata)
+        errors = _check_run_args(cliargs)
+        if len(errors) != 0:
+            raise RuntimeError("Errors in cli input:\n  " + "\n  ".join(errors))
+
+        self.kernel = cliargs.kernel
+        self.initrd = cliargs.initrd
+        self.stubby = cliargs.stubby
+        self.shim = cliargs.shim
+        self.signing_key_in = cliargs.signing_key
+        self.signing_cert = cliargs.signing_cert
+        self.signing_pass = cliargs.signing_pass
+        if self.signing_pass is None:
+            self.signing_key = self.signing_key_in
+        else:
+            self.signing_key = os.path.sep.join((self.workdir, "signing.key"))
+            decrypt_key(self.signing_key_in, self.signing_pass, self.signing_key)
+
+        self.signed_shim = os.path.sep.join((self.workdir, "shim-signed.efi"))
+        sign_efi(self.signing_key, self.signing_cert, self.shim, self.signed_shim)
+
+        self.tests = self.testinfo["tests"]
+
+    # for attr in ("kernel", "initrd", "stubby", "shim", "signing_key",
+    #        "signing_cert", "ovmf_code", "ovmf_vars_secure"):
+    #    print("%s: %s" % (attr, getattr(cliargs, attr)))
+
+    def cleanup(self):
+        if self.cleanup_workdir:
+            shutil.rmtree(self.workdir)
+
+# class Validator:
+#     def __init__(tests, resultsd):
+#
+#
+#     def validate_all
+#         for test in tests:
+#             pass
+#
+#     def cleanup():
+
+
+def main_run(cliargs):
+    runner = Runner(cliargs)
+    tests = runner.tests
+    print("There are %d tests to run" % len(tests))
+    return 0
+
+
+def main_validate(args):
+    print("this is validate: %s" % args)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--verbose', '-v', action='count', default=0)
+
+    subcmds = parser.add_subparsers(dest="subcmd")
+    s = subcmds.add_parser("run", help="run the tests")
+    _add_run_args(s)
+    s.add_argument(
+        "--no-validate", action="store_true", default=False,
+        help="Only run tests and collect output. do not validate.")
+    s.add_argument(
+        "-r", "--results", action="store", default="./results",
+        help="Write results output to dir")
+    s.add_argument("testdata", help="The yaml formated test definition file")
+    s.set_defaults(handler=main_run)
+
+    s = subcmds.add_parser("validate", help="validate test results")
+    s.add_argument("results-dir", help="Results dir from 'run'")
+    s.set_defaults(handler=main_validate)
+
+    args = parser.parse_args()
+
+    level = (logging.ERROR, logging.INFO, logging.DEBUG)[min(args.verbose, 2)]
+    logging.basicConfig(level=level)
+    if hasattr(args, 'handler'):
+        return args.handler(args)
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
