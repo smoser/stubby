@@ -34,11 +34,34 @@ test.yaml looks like this:
    * sign the shim with signing key creating shim-signed.efi.
 
 * Once per test run
+kernel initramfs builtin-cmdline sbat
+shim
+cmdline
+key
+cert
+
+
    * create kernel.efi.nosign
-   * sign kernel.efi to kernel-signed.efi 
+     inputs: kernel initramfs builtin-cmdline sbat.csv
+     output: kernel.efi.nosign
+   * sign kernel.efi.nosign:
+     inputs: kernel.efi.nosign
+     outputs: kernel.efi
+   * startup.nsh: no variables
+   * launch.nsh:
+     inputs: use-shim, cmdline
+   * genesp:
+     inputs:
    * write the startup.nsh and launch.nsh scripts.
      * launch.nsh is different if running shim.
    * boot
+   * create esp, takes as input:
+      
+   * boot-vm takes as inputs:
+        kernel-signed.efi
+        --secure-boot=on / --secure-boot=off
+        log-file
+        esp
 
 Notes:
  * startup.nsh 

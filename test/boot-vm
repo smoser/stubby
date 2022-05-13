@@ -5,6 +5,10 @@ OVMFCODE=/usr/share/OVMF/OVMF_CODE.fd
 SB_OVMFVARS=/usr/share/OVMF/OVMF_VARS.snakeoil.fd
 IB_OVMFVARS=/usr/share/OVMF/OVMF_VARS.fd
 
+OVMFCODE=/usr/share/OVMF/OVMF_CODE_4M.fd
+SB_OVMFVARS=/usr/share/OVMF/OVMF_VARS_4M.snakeoil.fd
+IB_OVMFVARS=/usr/share/OVMF/OVMF_VARS_4M.fd
+
 Usage() {
     cat <<EOF
 ${0##*/} [options] disk-image
@@ -54,16 +58,16 @@ main() {
     mkdir "$rund" || fail "failed to make run dir"
 
     [ "$secureboot" = "true" ] &&
-        ovmfvars="${IB_OVMFVARS}" || ovmfvars="${SB_OVMFVARS}"
+        ovmfvars="${SB_OVMFVARS}" || ovmfvars="${IB_OVMFVARS}"
 
-    cp "$OVMFCODE" "$rund/ovmf-code.fd" ||
+    cp -v "$OVMFCODE" "$rund/ovmf-code.fd" ||
         fail "failed to copy ovmf code to run-dir"
-    cp "$ovmfvars" "$rund/ovmf-vars.fd" ||
+    cp -v "$ovmfvars" "$rund/ovmf-vars.fd" ||
         fail "failed to copy ovmf vars to run-dir"
 
     # create a qcow backed by the input file.
     # This means we don't change it and is sort of a "fast copy"
-    qemu-img create -f qcow2 -b "$espfp" "$rund/esp.qcow2" ||
+    qemu-img create -f qcow2 -b "$espfp" -F raw "$rund/esp.qcow2" ||
         fail "failed to create esp qcow"
 
     # other useful flags:

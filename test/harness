@@ -13,7 +13,12 @@ import time
 import yaml
 
 TMP_PREFIX = "stubbytest."
-
+STARTUP_NSH_CONTENT = r"""setvar SecureBoot
+fs0:
+cd fs0:\efi\boot
+launch.nsh
+reset -s "exited with %lasterror%"
+"""
 
 def booted_cmdline_cli(name, testdata, log):
     """Validate that linux's /proc/cmdline should be identical to testdata[cli]"""
@@ -146,6 +151,20 @@ def shell_quote(cmd):
 
 
 def subp(cmd, capture=True, data=None, rcs=None, timeout=None, signal=signal.SIGTERM):
+    """Execute a subprocess.
+
+    cmd: string or list to execute.  string is not split.
+    capture: capture and return stdin and stdout in the SubpResult
+    data: stdin to the process.
+    rcs: list of exit codes that should not raise exception.
+    timeout: maximum time in seconds for process to finish.
+    signal: the signal to send to the process. Standard Popen interface
+            always sends SIGKILL, which does not allow process to clean up.
+
+    Return is a SubpResult.
+    If rcs is provided and exit code is not in the list of rcs, then
+    a SubpError is raised.
+    """
     if isinstance(rcs, int):
         rcs = (rcs,)
 
@@ -212,6 +231,7 @@ def _check_run_args(cliargs):
         ("kernel", "kernel", None),
         ("initrd", "initrd", None),
         ("stubby", "stubby.efi", None),
+        ("sbat", "sbat.csv", None),
         ("shim", "shim.efi",
             lambda: first_file("/usr/lib/shim/shimx64.efi")),
         ("signing_key", "signing.key",
@@ -221,11 +241,15 @@ def _check_run_args(cliargs):
         ("ovmf_code", "ovmf-code.fd",
             lambda: first_file(
                 "/usr/share/OVMF/OVMF_CODE_4M.snakeoil.fd",
-                "/usr/share/OVMF/OVMF_CODE.fd")),
+                "/usr/share/OVMF/OVMF_CODE.snakeoil.fd")),
+        ("ovmf_vars_insecure", "ovmf-vars-insecure.fd",
+            lambda: first_file(
+                "/usr/share/OVMF/OVMF_VARS_4M.fd",
+                "/usr/share/OVMF/OVMF_VARS.fd")),
         ("ovmf_vars_secure", "ovmf-vars-secure.fd",
             lambda: first_file(
-                "/usr/share/OVMF/OVMF_VARS.snakeoil.fd",
-                "/usr/share/OVMF/OVMF_VARS_4M.snakeoil.fd")),
+                "/usr/share/OVMF/OVMF_VARS_4M.snakeoil.fd",
+                "/usr/share/OVMF/OVMF_VARS.snakeoil.fd")),
     )
 
     errors = []
@@ -238,7 +262,7 @@ def _check_run_args(cliargs):
         if argval is not None:
             continue
         if idir is not None:
-            fpath = os.path.sep.join((idir, fname))
+            fpath = path_join(idir, fname)
             if os.path.exists(fpath):
                 setattr(cliargs, argname, fpath)
                 continue
@@ -256,7 +280,7 @@ def _check_run_args(cliargs):
     # signing_pass is either a file in <idir>/signing.password or password as a string.
     if cliargs.signing_pass is None:
         if idir is not None:
-            fpath = os.path.sep.join((idir, "signing.password"))
+            fpath = path_join(idir, "signing.password")
             if os.path.exists(fpath):
                 with open(fpath, "r") as fp:
                     cliargs.signing_pass = fp.read().strip()
@@ -276,6 +300,8 @@ def _add_run_args(s):
          {"action": "store", "help": "linux kernel [<inputs>/kernel]"}),
         (("-i", "--initrd"),
          {"action": "store", "help": "linux initramfs [<inputs>/initrd]"}),
+        (("-B", "--sbat"),
+         {"action": "store", "help": "sbat [<inputs>/sbat.csv]"}),
         (("-S", "--shim"),
          {"action": "store", "help": "shim.efi [<inputs>/shim.efi]"}),
         (("-s", "--stubby"),
@@ -297,9 +323,7 @@ def _add_run_args(s):
               "by provided signing-key [<inputs>/ovmf-vars-secure.fd]")}),
         (("--ovmf-vars-insecure",),
          {"action": "store",
-          "help": (
-              "ovmf-vars for insecure boot. "
-              "[<inputs>/ovmf-vars-insecure.fd]")}),
+          "help": ("ovmf-vars for insecure boot. [<inputs>/ovmf-vars-insecure.fd]")}),
     )
 
     for args, kwargs in runargs:
@@ -316,6 +340,71 @@ def sign_efi(key, cert, unsigned, signed):
           "--output=" + signed, unsigned])
 
 
+def smash(output, stubefi, kernel, initrd, sbat, cmdline):
+    cfp, cmdline_f = tempfile.mkstemp(prefix=TMP_PREFIX)
+    os.write(cfp, cmdline.encode("utf-8"))
+    os.close(cfp)
+
+    cmd = [
+        "objcopy",
+	 f"--add-section=.cmdline={cmdline_f}",
+         "--change-section-vma=.cmdline=0x30000",
+         f"--add-section=.sbat={sbat}",
+         "--change-section-vma=.sbat=0x50000",
+         "--set-section-alignment=.sbat=512",
+         f"--add-section=.linux={kernel}",
+         "--change-section-vma=.linux=0x1000000",
+         f"--add-section=.initrd={initrd}",
+         "--change-section-vma=.initrd=0x3000000",
+         stubefi, output]
+
+    try:
+        subp(cmd)
+    finally:
+        os.unlink(cmdline_f)
+
+
+def ensure_dir(mdir):
+    if os.path.isdir(mdir):
+        return
+    os.makedirs(mdir)
+
+
+def write_file(path, content, mode="w"):
+    with open(path, mode) as fp:
+        fp.write(content)
+
+
+def gen_esp(esp, run_d, kernel, initrd, shim, stubefi, sbat, signing_key, signing_cert,
+            cmdline_builtin, cmdline_cli):
+    unsigned_kernel = path_join(run_d, "kernel-unsigned.efi")
+    signed_kernel = path_join(run_d, "kernel.efi")
+    startup_nsh = path_join(run_d, "startup.nsh")
+    launch_nsh = path_join(run_d, "launch.nsh")
+
+    write_file(startup_nsh, STARTUP_NSH_CONTENT)
+
+    lcontent = "kernel.efi" + " {cmdline_cli}" if cmdline_cli else ""
+    if shim:
+        lcontent = "shim.efi " + lcontent
+
+    write_file(launch_nsh, lcontent)
+
+    smash(unsigned_kernel, stubefi, kernel, initrd, sbat, cmdline_builtin)
+    sign_efi(signing_key, signing_cert, unsigned_kernel, signed_kernel)
+
+    cmd = ["gen-esp", "create", esp, f"{signed_kernel}:kernel.efi"
+           f"{startup_nsh}:startup.nsh", f"{launch_nsh}:launch.nsh"]
+    if shim:
+        cmd.append(f"{shim}:shim.efi")
+
+    subp(cmd)
+
+
+def path_join(*args):
+    return os.path.sep.join(args)
+
+
 class Runner:
     def __init__(self, cliargs, workdir=None):
         self.cleanup_workdir = False
@@ -328,6 +417,7 @@ class Runner:
         if len(errors) != 0:
             raise RuntimeError("Errors in cli input:\n  " + "\n  ".join(errors))
 
+        self.results_d = cliargs.results
         self.kernel = cliargs.kernel
         self.initrd = cliargs.initrd
         self.stubby = cliargs.stubby
@@ -335,20 +425,74 @@ class Runner:
         self.signing_key_in = cliargs.signing_key
         self.signing_cert = cliargs.signing_cert
         self.signing_pass = cliargs.signing_pass
+        self.sbat = cliargs.sbat
+        self.ovmf_vars_secure = cliargs.ovmf_vars_secure
+        self.ovmf_vars_insecure = cliargs.ovmf_vars_insecure
+        self.ovmf_code = cliargs.ovmf_code
+
+        print(f"code: {self.ovmf_code}")
+        print(f"vars-secure: {self.ovmf_vars_secure}")
+        print(f"vars-insecure: {self.ovmf_vars_insecure}")
         if self.signing_pass is None:
             self.signing_key = self.signing_key_in
         else:
-            self.signing_key = os.path.sep.join((self.workdir, "signing.key"))
+            self.signing_key = path_join(self.workdir, "signing.key")
             decrypt_key(self.signing_key_in, self.signing_pass, self.signing_key)
 
-        self.signed_shim = os.path.sep.join((self.workdir, "shim-signed.efi"))
+        self.signed_shim = path_join(self.workdir, "shim-signed.efi")
         sign_efi(self.signing_key, self.signing_cert, self.shim, self.signed_shim)
 
         self.tests = self.testinfo["tests"]
 
-    # for attr in ("kernel", "initrd", "stubby", "shim", "signing_key",
-    #        "signing_cert", "ovmf_code", "ovmf_vars_secure"):
-    #    print("%s: %s" % (attr, getattr(cliargs, attr)))
+        ensure_dir(self.results_d)
+        with open(cliargs.testdata, "r") as rfp:
+            test_contents = rfp.read()
+        with open(path_join(self.results_d, "tests.yaml"), "w") as fp:
+            fp.write(test_contents)
+
+
+    def run_all(self):
+        for testdata in self.tests:
+            self.run(testdata)
+
+    def run_name(self, name):
+        for testdata in self.tests:
+            if testdata.get("name") == name:
+                return self.run(testdata)
+        raise KeyError(f"No test named {name}")
+
+    def run(self, testdata):
+        name = testdata["name"]
+        run_d = path_join(self.workdir, name)
+        results_d = path_join(self.workdir, name)
+        ensure_dir(run_d)
+        ensure_dir(results_d)
+        esp = path_join(run_d, "esp.raw")
+
+        gen_esp(
+            esp, run_d=run_d, kernel=self.kernel, initrd=self.initrd,
+            shim=self.shim if testdata["shim"] else None,
+            stubefi=self.stubby, sbat=self.sbat,
+            signing_key=self.signing_key, signing_cert=self.signing_cert,
+            cmdline_builtin=testdata["builtin"], cmdline_cli=testdata["cli"])
+
+        subp(["ls", "-l", run_d], capture=False)
+
+        ovmf_vars = path_join(run_d, "ovmf-vars.fd")
+        shutil.copyfile(
+            self.ovmf_vars_secure if testdata["sb"] else self.ovmf_vars_insecure,
+            ovmf_vars)
+
+        subp(["qemu-system-x86_64", "-enable-kvm",
+              "-m", "1024",
+              "-serial", "mon:stdio",
+              "-vnc", "none",
+              "-nic", "none",
+              "-drive", f"if=pflash,format=raw,file={self.ovmf_code},readonly=on",
+              "-drive", f"if=pflash,format=raw,file={ovmf_vars}",
+              "-drive", f"file={esp},id=disk00,if=none,format=raw,index=0",
+              "-device", "virtio-blk,drive=disk00,serial=esp-image"],
+             capture=False)
 
     def cleanup(self):
         if self.cleanup_workdir:
@@ -368,6 +512,7 @@ class Runner:
 def main_run(cliargs):
     runner = Runner(cliargs)
     tests = runner.tests
+    runner.run_name("sb-shim-allowed")
     print("There are %d tests to run" % len(tests))
     return 0
 
