@@ -1,8 +1,15 @@
+# tests look like:
+#   name: (string) a-unique-name
+#   sb: (bool) run secure-boot ? default is based on name starting with sb-
+#   shim: (bool) use shim ? default based on "sb-shim" or "ib-shim" in name.
+#   cli: (string) command line arguments to pass to kernel.efi
+#   builtin: (string) the kernel command line to build in.
+#   assert: (list) list of assertions
+#     - booted-cmdline-cli: the kernel booted and had the provided 'cli'
+#     - denied-boot: stubby refused to boot kernel.
+#     - warned-cmdline: stubby warned that secureboot would not allow.
 tests:
   - name: "sb-shim-allowed"
-    sb: true
-    shim: true
-    builtin: ""
     cli: "root=atomix console=ttyS0"
     assert:
       - booted-cmdline-cli

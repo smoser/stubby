@@ -47,12 +47,12 @@ def load_test_data(testfile):
         raise ValueError(f"top level entry in test data from {testfile} is not a dict")
 
     fields = {
-        "sb": bool,
-        "shim": bool,
-        "builtin": str,
-        "cli": str,
-        "assert": list,
-        "name": str,
+        "builtin": (str, lambda n: ""),
+        "sb": (bool, lambda n: name.startswith("sb-")),
+        "shim": (bool, lambda n: n.startswith("sb-shim") or n.startswith("ib-shim")),
+        "cli": (str, None),
+        "assert": (list, None),
+        "name": (str, None)
     }
 
     errors = []
@@ -71,9 +71,13 @@ def load_test_data(testfile):
         if name in names:
             errors.append(f"name {name} appears multiple times (num {tnum})")
         names.add(name)
-        for fname, ftype in fields.items():
+        for fname, (ftype, namebased) in fields.items():
             if fname not in td:
-                errors.append(f"{name}: missing field {fname}")
+                # allow defaults based on name for shorter yaml
+                if namebased is None:
+                    errors.append(f"{name}: missing field {fname}")
+                else:
+                    td[fname] = namebased(name)
             elif not isinstance(td.get(fname), ftype):
                 found = td.get(fname).__class__.__name__
                 errors.append(f"{name}: {fname}: is type '{found}', expected {ftype}")
