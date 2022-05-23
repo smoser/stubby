@@ -555,12 +555,15 @@ class Runner:
 
 def main_run(cliargs):
     runner = Runner(cliargs)
-    tests = runner.tests
-    runner.run_name("sb-shim-allowed")
-    runner.run_name("sb-noshim-allowed")
-    #runner.run_name("ib-shim-allowed")
-    #runner.run_name("ib-noshim-allowed")
-    print("There are %d tests to run" % len(tests))
+    try:
+        tests = runner.tests
+        runner.run_name("sb-shim-allowed")
+        runner.run_name("sb-noshim-allowed")
+        #runner.run_name("ib-shim-allowed")
+        #runner.run_name("ib-noshim-allowed")
+        print("There are %d tests to run" % len(tests))
+    finally:
+        runner.cleanup()
     return 0
 
 
