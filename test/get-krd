@@ -122,5 +122,5 @@ write_init "$init" || fail "failed to write init to file"
         rm -f "initrd.tmp"
         fail "failed to create initrd"
     }
-stderr "created $outd/initrd with 'init'"
+stderr "created ${outd%/}/initrd with 'init'"
 exit
