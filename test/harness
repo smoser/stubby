@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import codecs
 import logging
 import os.path
 import re
@@ -13,13 +14,31 @@ import tempfile
 import time
 import yaml
 
+
+MODE_NVRAM = 'nvram'
+MODE_UEFI_SHELL = 'efi_shell'
+
 TMP_PREFIX = "stubbytest."
-STARTUP_NSH_CONTENT = r"""setvar SecureBoot
+STARTUP_NSH_UEFI_SHELL = r"""setvar SecureBoot
 fs0:
 cd fs0:\efi\boot
 launch.nsh
 reset -s "exited with %lasterror%"
 """
+
+STARTUP_NSH_NVRAM = r"""setvar SecureBoot
+fs0:
+cd fs0:\efi\boot
+bcfg boot rm 00
+bcfg boot add 00 {efi} harness-efi
+bcfg boot -opt 0x0 boot.opts
+bcfg boot dump -v
+mv startup.nsh startup.nsh.orig
+cp shutdown.nsh startup.nsh
+reset
+"""
+
+SHUTDOWN_NSH_CONTENT = r"""reset -s shutdown-from-shutdown-nsh"""
 
 ANSI_ESCAPE = re.compile(b'(?:\x1b[@-_]|[\x80-\x9f])[0-?]*[ -/]*[@-~]')
 
@@ -100,10 +119,11 @@ CHECKS = {
     "denied-boot": denied_boot,
 }
 
+
 def escape_ansi(data):
     replaces = (
-        (b'\x1b\x5b\x30\x39\x3b\x30\x31\x48', b'\n'), # before 'Press any key'
-        (b'\x0d', b''), # ctrl-M / carriage return
+        (b'\x1b\x5b\x30\x39\x3b\x30\x31\x48', b'\n'),  # before 'Press any key'
+        (b'\x0d', b''),  # ctrl-M / carriage return
     )
     for src, dest in replaces:
         data = data.replace(src, dest)
@@ -168,7 +188,8 @@ def shell_quote(cmd):
     return ' '.join(shlex.quote(a) for a in cmd)
 
 
-def subp(cmd, capture=True, data=None, rcs=(0,), timeout=None, signal=signal.SIGTERM):
+def subp(cmd, capture=True, data=None, rcs=(0,), timeout=None, signal=signal.SIGTERM,
+         cwd=None):
     """Execute a subprocess.
 
     cmd: string or list to execute.  string is not split.
@@ -206,7 +227,7 @@ def subp(cmd, capture=True, data=None, rcs=(0,), timeout=None, signal=signal.SIG
 
         logging.debug("Executing: %s", shell_quote(cmd))
         sp = subprocess.Popen(
-            cmd, stdout=stdout, stderr=stderr, stdin=stdin)
+            cmd, stdout=stdout, stderr=stderr, stdin=stdin, cwd=cwd)
 
         def communicate():
             try:
@@ -375,16 +396,16 @@ def smash(output, stubefi, kernel, initrd, sbat, cmdline):
 
     cmd = [
         "objcopy",
-	 f"--add-section=.cmdline={cmdline_f}",
-         "--change-section-vma=.cmdline=0x30000",
-         f"--add-section=.sbat={sbat}",
-         "--change-section-vma=.sbat=0x50000",
-         "--set-section-alignment=.sbat=512",
-         f"--add-section=.linux={kernel}",
-         "--change-section-vma=.linux=0x1000000",
-         f"--add-section=.initrd={initrd}",
-         "--change-section-vma=.initrd=0x3000000",
-         stubefi, output]
+        f"--add-section=.cmdline={cmdline_f}",
+        "--change-section-vma=.cmdline=0x30000",
+        f"--add-section=.sbat={sbat}",
+        "--change-section-vma=.sbat=0x50000",
+        "--set-section-alignment=.sbat=512",
+        f"--add-section=.linux={kernel}",
+        "--change-section-vma=.linux=0x1000000",
+        f"--add-section=.initrd={initrd}",
+        "--change-section-vma=.initrd=0x3000000",
+        stubefi, output]
 
     try:
         subp(cmd)
@@ -403,32 +424,50 @@ def write_file(path, content, mode="w"):
         fp.write(content)
 
 
-def gen_esp(esp, run_d, kernel, initrd, shim, stubefi, sbat, signing_key, signing_cert,
+def gen_esp(esp, run_d, mode, kernel, initrd, shim, stubefi, sbat, signing_key, signing_cert,
             cmdline_builtin, cmdline_cli):
+
     unsigned_kernel = path_join(run_d, "kernel-unsigned.efi")
     signed_kernel = path_join(run_d, "kernel.efi")
     startup_nsh = path_join(run_d, "startup.nsh")
-    launch_nsh = path_join(run_d, "launch.nsh")
 
-    write_file(startup_nsh, STARTUP_NSH_CONTENT)
-
-    lcontent = "kernel.efi" + f" {cmdline_cli}" if cmdline_cli else ""
+    files = [
+        f"{signed_kernel}:kernel.efi",
+        f"{startup_nsh}:startup.nsh",
+    ]
     if shim:
-        lcontent = "shim.efi " + lcontent
+        files.append(f"{shim}:shim.efi")
 
-    write_file(launch_nsh, lcontent + "\n")
+    if mode == MODE_NVRAM:
+        shutdown_nsh = path_join(run_d, "shutdown.nsh")
+        bootopts = path_join(run_d, "boot.opts")
+        files.extend([f"{shutdown_nsh}:shutdown.nsh", f"{bootopts}:boot.opts"])
+
+        kefi = "kernel.efi"
+        efi = kefi
+        if shim:
+            efi = "shim.efi"
+            cmdline_cli = kefi + " " + cmdline_cli
+
+        write_file(startup_nsh, STARTUP_NSH_NVRAM.format(efi=efi))
+        write_file(shutdown_nsh, SHUTDOWN_NSH_CONTENT)
+        with codecs.open(bootopts, mode="w", encoding="utf-16") as fp:
+            fp.write(cmdline_cli)
+    elif mode == MODE_UEFI_SHELL:
+        launch_nsh = path_join(run_d, "launch.nsh")
+        files.extend([f"{launch_nsh}:launch.nsh"])
+        write_file(startup_nsh, STARTUP_NSH_UEFI_SHELL)
+        lcontent = "kernel.efi" + f" {cmdline_cli}" if cmdline_cli else ""
+        if shim:
+            lcontent = "shim.efi " + lcontent
+        write_file(launch_nsh, lcontent + "\n")
+    else:
+        raise ValueError("Bad mode '%s': expected one of %s", mode, modes.join(","))
 
     smash(unsigned_kernel, stubefi, kernel, initrd, sbat, cmdline_builtin)
     sign_efi(signing_key, signing_cert, unsigned_kernel, signed_kernel)
 
-    cmd = ["gen-esp", "create", esp,
-           f"{signed_kernel}:kernel.efi",
-           f"{startup_nsh}:startup.nsh",
-           f"{launch_nsh}:launch.nsh"]
-    if shim:
-        cmd.append(f"{shim}:shim.efi")
-
-    subp(cmd)
+    subp(["gen-esp", "create", esp] + files)
 
 
 def path_join(*args):
@@ -447,22 +486,27 @@ class Runner:
         if len(errors) != 0:
             raise RuntimeError("Errors in cli input:\n  " + "\n  ".join(errors))
 
-        self.results_d = cliargs.results
-        self.kernel = cliargs.kernel
-        self.initrd = cliargs.initrd
-        self.stubby = cliargs.stubby
-        self.shim = cliargs.shim
+        self.results_d = os.path.abspath(cliargs.results)
+        self.kernel = self._to_workd(cliargs.kernel, "kernel")
+        self.initrd = self._to_workd(cliargs.initrd, "initrd")
+        self.stubby = self._to_workd(cliargs.stubby, "stubby.efi")
+        self.shim = self._to_workd(cliargs.shim, "shim.efi")
+        self.sbat = self._to_workd(cliargs.sbat, "sbat.csv")
+        self.ovmf_secure_vars = self._to_workd(
+                cliargs.ovmf_secure_vars, "ovmf-secure-vars.fd")
+        self.ovmf_insecure_vars = self._to_workd(
+                cliargs.ovmf_insecure_vars, "ovmf-insecure-vars.fd")
+        self.ovmf_secure_code = self._to_workd(
+                cliargs.ovmf_secure_code, "ovmf-secure-code.fd")
+        self.ovmf_insecure_code = self._to_workd(
+                cliargs.ovmf_insecure_code, "ovmf-insecure-code.fd")
+
         self.signing_key_in = cliargs.signing_key
-        self.signing_cert = cliargs.signing_cert
+        self.signing_cert = self._to_workd(cliargs.signing_cert, "signing.pem")
         self.signing_pass = cliargs.signing_pass
-        self.sbat = cliargs.sbat
-        self.ovmf_secure_vars = cliargs.ovmf_secure_vars
-        self.ovmf_insecure_vars = cliargs.ovmf_insecure_vars
-        self.ovmf_secure_code = cliargs.ovmf_secure_code
-        self.ovmf_insecure_code = cliargs.ovmf_insecure_code
 
         if self.signing_pass is None:
-            self.signing_key = self.signing_key_in
+            self.signing_key = self._to_workd(self.signing_key_in, "signing.key")
         else:
             self.signing_key = path_join(self.workdir, "signing.key")
             decrypt_key(self.signing_key_in, self.signing_pass, self.signing_key)
@@ -477,6 +521,11 @@ class Runner:
             test_contents = rfp.read()
         with open(path_join(self.results_d, "tests.yaml"), "w") as fp:
             fp.write(test_contents)
+
+    def _to_workd(self, fpath, name):
+        newpath = path_join(self.workdir, name)
+        shutil.copyfile(fpath, newpath)
+        return newpath
 
     def run_all(self):
         for testdata in self.tests:
@@ -497,7 +546,8 @@ class Runner:
         esp = path_join(run_d, "esp.raw")
 
         gen_esp(
-            esp, run_d=run_d, kernel=self.kernel, initrd=self.initrd,
+            esp, run_d=run_d, mode=MODE_NVRAM,
+            kernel=self.kernel, initrd=self.initrd,
             shim=self.signed_shim if testdata["shim"] else None,
             stubefi=self.stubby, sbat=self.sbat,
             signing_key=self.signing_key, signing_cert=self.signing_cert,
@@ -511,22 +561,34 @@ class Runner:
             ovars_src = self.ovmf_insecure_vars
 
         shutil.copyfile(ovars_src, ovars)
+        rel_ovars = os.path.basename(ovars)
+        rel_ocode_src = path_join("..", os.path.basename(ocode_src))
+        rel_esp = os.path.basename(esp)
 
         slog = path_join(results_d, "serial.log")
-        ret = subp(
-            ["qemu-system-x86_64",
-             "-M", "q35,smm=on,accel=kvm",
-             "-m", "256",
-             # need to disable s3 for ubuntu ovmf older than 22.04.
-             "-global", "ICH9-LPC.disable_s3=1",
+        cmd_base = [
+            "qemu-system-x86_64",
+            "-M", "q35,smm=on,accel=kvm",
+            "-m", "256",
+            # need to disable s3 for ubuntu ovmf older than 22.04.
+            "-global", "ICH9-LPC.disable_s3=1",
+            "-global", "driver=cfi.pflash01,property=secure,value=on",
+            "-nic", "none",
+            "-drive", f"if=pflash,format=raw,file={rel_ocode_src},readonly=on",
+            "-drive", f"if=pflash,format=raw,file={rel_ovars}",  # could snapshot=on here
+            "-drive", f"file={rel_esp},id=disk00,if=none,format=raw,index=0,snapshot=on",
+            "-device", "virtio-blk,drive=disk00,serial=esp-image"]
+
+        cmd = cmd_base + [
              "-serial", f"file:{slog}.raw",
              "-vnc", "none",
-             "-nic", "none",
-             "-drive", f"if=pflash,format=raw,file={ocode_src},readonly=on",
-             "-drive", f"if=pflash,format=raw,file={ovars}",
-             "-drive", f"file={esp},id=disk00,if=none,format=raw,index=0",
-             "-device", "virtio-blk,drive=disk00,serial=esp-image"],
-            capture=False, rcs=None)
+        ]
+
+        cmd_inter = cmd_base + ["-serial", "mon:stdio"]
+
+        with open(path_join(run_d, "boot"), "w") as fp:
+            fp.write("#!/bin/sh\n" + " ".join(cmd_inter) + "\n")
+        ret = subp(cmd, capture=False, rcs=None, cwd=run_d)
 
         try:
             if ret.rc != 0:
@@ -536,7 +598,6 @@ class Runner:
                 with open(slog + ".raw", "rb") as rfp:
                     with open(slog, "wb") as wfp:
                         wfp.write(escape_ansi(rfp.read()))
-
 
     def cleanup(self):
         if self.cleanup_workdir:
@@ -557,11 +618,11 @@ def main_run(cliargs):
     runner = Runner(cliargs)
     try:
         tests = runner.tests
-        runner.run_name("sb-shim-allowed")
-        runner.run_name("sb-noshim-allowed")
-        #runner.run_name("ib-shim-allowed")
-        #runner.run_name("ib-noshim-allowed")
         print("There are %d tests to run" % len(tests))
+        #runner.run_name("sb-shim-allowed")
+        #runner.run_name("sb-noshim-allowed")
+        runner.run_name("ib-shim-allowed")
+        # runner.run_name("ib-noshim-allowed")
     finally:
         runner.cleanup()
     return 0
