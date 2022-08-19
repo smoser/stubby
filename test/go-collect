@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2166
 fail() { echo "$@" 1>&2; exit 1; }
 Usage() {
     cat <<EOF
@@ -11,7 +12,7 @@ EOF
 info() {
     echo "release: $REL"
     echo "packages:"
-    for p in ovmf shim-signed; do
+    for p in ovmf shim-signed ; do
         v=$(dpkg-query --show --showformat='${Version}' "$p") ||
             fail "failed to get version for $p"
         echo "  $p: \"$v\""
@@ -32,7 +33,8 @@ set --
 mkdir "$outd" || fail "failed to make output dir"
 
 if [ "$install" = "true" ]; then
-    [ "$(id -u)" = "0" ] || fail "must be root"
+    [ "$(id -u)" = "0" ] ||
+        fail "must be root for install (try sudo or --no-install)"
     apt-get update --quiet || fail "apt-get update failed."
     apt-get install --quiet \
         --assume-yes --no-install-recommends \
@@ -44,50 +46,68 @@ fi
 
 set --
 set -- "$@" \
-   "shim.efi|/usr/lib/shim/shimx64.efi" \
-   "signing.pem|/usr/share/ovmf/PkKek-1-snakeoil.pem" \
-   "signing.key|/usr/share/ovmf/PkKek-1-snakeoil.key" \
+   "/usr/share/ovmf/PkKek-1-snakeoil.pem" \
+   "signing.pem|link:PkKek-1-snakeoil.pem" \
+   "/usr/share/ovmf/PkKek-1-snakeoil.key" \
+   "signing.key|link:PkKek-1-snakeoil.key" \
    "signing.password|text:snakeoil"
 
 bd=/usr/share/OVMF
 case "$REL" in
     jammy)
         set -- "$@" \
-            "ovmf-insecure-code.fd|link:ovmf-secure-code.fd" \
-            "ovmf-insecure-vars.fd|$bd/OVMF_VARS_4M.fd" \
-            "ovmf-secure-code.fd|$bd/OVMF_CODE_4M.secboot.fd" \
-            "ovmf-secure-vars.fd|$bd/OVMF_VARS_4M.snakeoil.fd"
+            "$bd/OVMF_VARS_4M.fd" \
+            "$bd/OVMF_CODE_4M.secboot.fd" \
+            "$bd/OVMF_VARS_4M.snakeoil.fd" \
+            "ovmf-insecure-code.fd|link:OVMF_CODE_4M.secboot.fd" \
+            "ovmf-insecure-vars.fd|link:OVMF_VARS_4M.fd" \
+            "ovmf-secure-code.fd|link:OVMF_CODE_4M.secboot.fd" \
+            "ovmf-secure-vars.fd|link:OVMF_VARS_4M.snakeoil.fd"
         ;;
     focal)
         set -- "$@" \
-            "ovmf-insecure-code.fd|link:ovmf-secure-code.fd" \
-            "ovmf-insecure-vars.fd|$bd/OVMF_VARS.fd" \
-            "ovmf-secure-code.fd|$bd/OVMF_CODE.secboot.fd" \
-            "ovmf-secure-vars.fd|$bd/OVMF_VARS.snakeoil.fd"
+            "$bd/OVMF_VARS.fd" \
+            "$bd/OVMF_CODE.secboot.fd" \
+            "$bd/OVMF_VARS.snakeoil.fd" \
+            "ovmf-insecure-code.fd|link:OVMF_CODE.secboot.fd" \
+            "ovmf-insecure-vars.fd|link:OVMF_VARS.fd" \
+            "ovmf-secure-code.fd|link:OVMF_CODE.secboot.fd" \
+            "ovmf-secure-vars.fd|link:OVMF_VARS.snakeoil.fd"
         ;;
     *) fail "unknown release $REL";;
 esac
 
 for line in "$@"; do
-    target="${line%%|*}"
-    src=${line#*|}
+    case "$line" in
+        *\|*)
+            target="${line%%|*}"
+            src=${line#*|};;
+        *)
+            target=${line##*/}
+            src="$line";;
+    esac
     case "$src" in
         text:*)
         src=${src#text:}
-            echo -n "$src" > "$outd/$target" || fail "failed to write $target"
+            printf "%s" "$src" > "$outd/$target" || fail "failed to write $target"
             echo "wrote $target from text"
         ;;
         link:*)
             src=${src#link:}
             ln -s "$src" "$outd/$target" || fail "failed link $src -> $target"
-            echo "linked from $target to $src"
+            echo "linked $target -> $src"
         ;;
         *)
             cp "$src" "$outd/$target" || fail "failed copy $src -> $target"
-            echo "wrote $target from $src"
+            echo "copied $src to $target"
         ;;
     esac
 done
+
+openssl rsa -passin stdin \
+    -in "$outd/signing.key" \
+    -out "$outd/signing-unlocked.key" < "$outd/signing.password" ||
+    fail "failed to decrypt signing key"
 
 info > "$outd/firmware-info.yaml"
 echo "wrote info to firmware-info.yaml"
