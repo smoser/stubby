@@ -343,6 +343,9 @@ def _add_run_args(s):
     runargs = (
         (("-I", "--inputs-dir"),
          {"action": "store", "help": "test inputs directory"}),
+        (("-M", "--boot-mode",),
+         {"action": "store", "default": MODE_NVRAM,
+          "help": "The boot mode: %s or %s" % (MODE_UEFI_SHELL, MODE_NVRAM)}),
         (("-k", "--kernel"),
          {"action": "store", "help": "linux kernel [<inputs>/kernel]"}),
         (("-i", "--initrd"),
@@ -451,7 +454,7 @@ def gen_esp(esp, run_d, mode, kernel, initrd, shim, stubefi, sbat, signing_key, 
 
         write_file(startup_nsh, STARTUP_NSH_NVRAM.format(efi=efi))
         write_file(shutdown_nsh, SHUTDOWN_NSH_CONTENT)
-        with codecs.open(bootopts, mode="w", encoding="utf-16") as fp:
+        with codecs.open(bootopts, mode="w", encoding="utf-16le") as fp:
             fp.write(cmdline_cli)
     elif mode == MODE_UEFI_SHELL:
         launch_nsh = path_join(run_d, "launch.nsh")
@@ -487,6 +490,7 @@ class Runner:
             raise RuntimeError("Errors in cli input:\n  " + "\n  ".join(errors))
 
         self.results_d = os.path.abspath(cliargs.results)
+        self.boot_mode = cliargs.boot_mode
         self.kernel = self._to_workd(cliargs.kernel, "kernel")
         self.initrd = self._to_workd(cliargs.initrd, "initrd")
         self.stubby = self._to_workd(cliargs.stubby, "stubby.efi")
@@ -546,7 +550,7 @@ class Runner:
         esp = path_join(run_d, "esp.raw")
 
         gen_esp(
-            esp, run_d=run_d, mode=MODE_NVRAM,
+            esp, run_d=run_d, mode=self.boot_mode,
             kernel=self.kernel, initrd=self.initrd,
             shim=self.signed_shim if testdata["shim"] else None,
             stubefi=self.stubby, sbat=self.sbat,
@@ -619,10 +623,10 @@ def main_run(cliargs):
     try:
         tests = runner.tests
         print("There are %d tests to run" % len(tests))
-        #runner.run_name("sb-shim-allowed")
-        #runner.run_name("sb-noshim-allowed")
+        runner.run_name("sb-shim-allowed")
+        runner.run_name("sb-noshim-allowed")
         runner.run_name("ib-shim-allowed")
-        # runner.run_name("ib-noshim-allowed")
+        runner.run_name("ib-noshim-allowed")
     finally:
         runner.cleanup()
     return 0
