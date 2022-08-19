@@ -24,6 +24,8 @@ test.yaml looks like this:
    * install needed packages - ovmf, qemu-system
    * update apt and apt-get download shim-signed.
    * get-krd - creates kernel and initrd
+   * go-collect to grab 'inputs/' from system, or possibly download known good
+     ones.
    * make - create stubby.efi
 
 * Once per harness run:
@@ -64,6 +66,25 @@ cert
         esp
 
 Notes:
+ * jammy ovmf files with snakeoil are broken
+   https://bugs.launchpad.net/ubuntu/+source/edk2/+bug/1986692
+ * each run/<testdir> has a 'boot' script that can be run and will run the
+   test interactively.  that's nice for getting to sehll and seeing things.
+ * in the future it'd be nice if that could potentially re-generate the
+   esp.img if you made changes.
+
+ * there are 3 "modes" of boot.  "first loader" indicates either shim.efi
+   (which then loads kernel.efi) or kernel.efi directly:
+   * first loader specified in nvram entry (bcfg or efibootmgr)
+   * first loader executed from startup.nsh script
+   * first loader named bootx64.efi finds grubx64.efi .. no current way for
+     cmdline arguments this way.  This is how a removble media would operate.
+     We'd talked about potentially having a simplistic menu or something to
+     read a file and pick one from a list.
+
+ * bcfg can be used to write nvram entries
+   https://superuser.com/questions/1035522/how-to-add-booting-parameters-to-the-kernel-with-bcfg-from-the-efi-shell
+
  * startup.nsh 
    * is selected for execution by the bootloader (special well known name)
    * startup.nsh runs 'launch.nsh' - this is because a .nsh script will
@@ -73,7 +94,7 @@ Notes:
 
      after executing launch.nsh, startup.nsh will shutdown.
 
- * launch.nsh will either execute:
-      shim.efi kernel.efi args here
-      or
-      kernel.efi args here.
+    * launch.nsh will either execute:
+         shim.efi kernel.efi args here
+         or
+         kernel.efi args here.
