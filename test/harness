@@ -16,7 +16,7 @@ import yaml
 
 
 MODE_NVRAM = 'nvram'
-MODE_UEFI_SHELL = 'efi_shell'
+MODE_UEFI_SHELL = 'efi-shell'
 
 TMP_PREFIX = "stubbytest."
 STARTUP_NSH_UEFI_SHELL = r"""setvar SecureBoot

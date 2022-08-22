@@ -1,3 +1,14 @@
+STATE:
+
+  * test only collects logs right now (doesn't look at results)
+  * Right now you can run test with (it only collec):
+
+     $  PATH=$PWD/test:$PATH ./test/harness run --inputs-dir=inputs/ \
+             --stubby=stubby.efi --sbat=sbat.csv test/tests.yaml
+  * --boot-mode is efi or uefi_shell . ideally we integrate that into tests/
+  * tests wont actually pass with upstream stubby, as bug
+    https://github.com/puzzleos/stubby/issues/19
+
 Test things:
 
 test.yaml looks like this:
