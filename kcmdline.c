@@ -20,7 +20,6 @@ static const CHAR8 allowed[][32] = {
 	"crashkernel=256M",
 };
 
-
 BOOLEAN is_allowed(const CHAR8 *input) {
 	int len = 0;
 	int input_len = strlena(input);
@@ -44,18 +43,29 @@ BOOLEAN is_allowed(const CHAR8 *input) {
 
 // check cmdline to make sure it contains only allowed words.
 // return EFI_SUCCESS on safe, EFI_SECURITY_VIOLATION on unsafe;
-EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len) {
+EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errmsg) {
 	CHAR8 c = '\0';
 	CHAR8 *buf = NULL;
+	CHAR16 *errbuf = NULL;
+	int errbuf_len = (cmdline_len + 80);
 	CHAR8 *tokens[MAX_TOKENS];
+	*errmsg = NULL;
 	EFI_STATUS status = EFI_SUCCESS;
 	int i;
 	int start = -1;
 	int num_toks = 0;
 	buf = AllocatePool(cmdline_len + 1);
-	if (!buf) {
-		return EFI_OUT_OF_RESOURCES;
+	if (buf == NULL) {
+		goto out;
+		status = EFI_OUT_OF_RESOURCES;
 	}
+
+	errbuf = AllocatePool(errbuf_len * sizeof(CHAR16));
+	if (errbuf == NULL) {
+		status = EFI_OUT_OF_RESOURCES;
+		goto out;
+	}
+	errbuf[0] = '\0';
 
 	CopyMem(buf, cmdline, cmdline_len);
 	buf[cmdline_len] = '\0';
@@ -69,12 +79,13 @@ EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len) {
 	for (i = 0; i < cmdline_len; i++) {
 		c = buf[i];
 		if (c < 0x20 || c > 0x7e) {
-			Print(L"Bad character 0x%02hhx in position %d: %a.\n", c, i, cmdline);
+			UnicodeSPrint(errbuf, errbuf_len,
+				L"Bad character 0x%02hhx in position %d: %a.\n", c, i, cmdline);
 			status = EFI_SECURITY_VIOLATION;
 			goto out;
 		}
 		if (i >= MAX_TOKENS) {
-			Print(L"Too many tokens in cmdline.\n");
+			UnicodeSPrint(errbuf, errbuf_len, L"Too many tokens in cmdline.\n");
 			status = EFI_SECURITY_VIOLATION;
 			goto out;
 		}
@@ -100,13 +111,70 @@ EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len) {
 
 	for (i=0; i < num_toks; i++) {
 		if (!is_allowed(tokens[i])) {
-			Print(L"token not allowed: %a\n", tokens[i]);
-			return EFI_SECURITY_VIOLATION;
+			UnicodeSPrint(errbuf, errbuf_len, L"token not allowed: %a\n", tokens[i]);
+			status = EFI_SECURITY_VIOLATION;
 		}
 	}
 
 out:
 
-	FreePool(buf);
+	if (buf != NULL) {
+		FreePool(buf);
+	}
+	if (errbuf != NULL && errbuf[0] == '\0') {
+		FreePool(errbuf);
+		errbuf = NULL;
+	}
+	*errmsg = errbuf;
 	return status;
+}
+
+EFI_STATUS get_cmdline(
+		BOOLEAN secure,
+		CONST CHAR8 *builtin, UINTN builtin_len,
+		CONST CHAR8 *runtime, UINTN runtime_len,
+		CHAR8 **cmdline, UINTN *cmdline_len,
+		CHAR16 **errmsg) {
+
+	return EFI_SECURITY_VIOLATION;
+}
+
+EFI_STATUS get_cmdline_with_print(
+		BOOLEAN secure,
+		CONST CHAR8 *builtin, UINTN builtin_len,
+		CONST CHAR8 *runtime, UINTN runtime_len,
+		CHAR8 **cmdline, UINTN *cmdline_len) {
+
+	CHAR16 *errmsg = NULL;
+	EFI_STATUS err;
+
+	err = get_cmdline(secure,
+		builtin, builtin_len, runtime, runtime_len,
+		cmdline, cmdline_len, &errmsg);
+
+	if (!EFI_ERROR(err)) {
+		goto out;
+		return err;
+	}
+
+	if (errmsg == NULL) {
+		Print(L"%r\n");
+	} else {
+		Print(L"%r: %ls\n", errmsg);
+	}
+
+	if (err == EFI_SECURITY_VIOLATION) {
+		if (secure) {
+			Print(L"Custom kernel command line rejected\n");
+		} else {
+			Print(L"Custom kernel would be rejected in secure mode\n");
+		}
+	}
+
+out:
+	if (errmsg != NULL) {
+		FreePool(errmsg);
+	}
+
+	return err;
 }

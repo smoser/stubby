@@ -9,16 +9,17 @@
 #include <stdarg.h>
 #include <wchar.h>
 
-UINTN Print(IN CONST wchar_t *fmt, ...) {
+
+wchar_t* _fixup_fmt(const wchar_t *fmt) {
 	// Efilib's Print and libc wprintf differ on the format specifiers
 	// for wchar_t (wide) and char (ascii) strings:
-	//	 lib-name | wchar spec  | char spec |
-	//	 efilib   | %ls, %s	 | %a		|
-	//	 libc	 | %ls		 | %s		|
+	//   lib-name | wchar spec  | char spec |
+	//   efilib   | %ls, %s     | %a        |
+	//   libc     | %ls         | %s        |
 	//
 	// To simplify things:
-	//  * restrict callers of 'Print' to only '%ls' or '%a'
-	//  * change %a (ascii) to %s before calling vwprintf
+	//  * restrict callers to only '%ls' or '%a'
+	//  * change %a (ascii) to %s
 	if (wcsstr(fmt, L"%s") != NULL) {
 		wprintf(L"ERROR: cannot use '%%s' in fmt string: %ls\n", fmt);
 		exit(1);
@@ -41,6 +42,12 @@ UINTN Print(IN CONST wchar_t *fmt, ...) {
 		last = fmt[i];
 	}
 
+	return fixedfmt;
+}
+
+UINTN Print(IN CONST wchar_t *fmt, ...) {
+	wchar_t *fixedfmt = _fixup_fmt(fmt);
+
 	int x;
 	va_list args;
 	va_start(args, fmt);
@@ -48,6 +55,20 @@ UINTN Print(IN CONST wchar_t *fmt, ...) {
 	va_end(args);
 
 	free(fixedfmt);
+	return x;
+}
+
+UINTN UnicodeSPrint(OUT wchar_t *Str, IN UINTN StrSize, IN CONST wchar_t *fmt, ...) {
+	wchar_t *fixedfmt = _fixup_fmt(fmt);
+
+	int x;
+	va_list args;
+	va_start(args, fmt);
+	x = vswprintf(Str, StrSize, fixedfmt, args);
+	va_end(args);
+
+	free(fixedfmt);
+
 	return x;
 }
 
@@ -71,4 +92,3 @@ UINTN strlena(IN CONST CHAR8 *s1) {
 	return strlen((char*)s1);
 }
 #endif
-

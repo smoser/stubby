@@ -69,8 +69,12 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table)
 	UINTN addrs[ELEMENTSOF(sections) - 1] = {};
 	UINTN offs[ELEMENTSOF(sections) - 1] = {};
 	UINTN szs[ELEMENTSOF(sections) - 1] = {};
+	CHAR8 *bt_cmdline = NULL;
+	UINTN bt_cmdline_len = 0;
+	CHAR8 *rt_cmdline = NULL;
+	UINTN rt_cmdline_len = 0;
 	CHAR8 *cmdline = NULL;
-	UINTN cmdline_len;
+	UINTN cmdline_len = 0;
 	CHAR16 uuid[37];
 	EFI_STATUS err;
 
@@ -100,44 +104,39 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table)
 	}
 
 	if (szs[0] > 0)
-		cmdline = (CHAR8 *)(loaded_image->ImageBase + addrs[0]);
+		bt_cmdline = (CHAR8 *)(loaded_image->ImageBase + addrs[0]);
 
-	cmdline_len = szs[0];
+	bt_cmdline_len = szs[0];
+
+	CHAR16 *options;
+	CHAR8 *line;
+	UINTN i;
+	options = (CHAR16 *)loaded_image->LoadOptions;
+	rt_cmdline_len = (loaded_image->LoadOptionsSize /
+		       sizeof(CHAR16)) * sizeof(CHAR8);
+	line = AllocatePool(rt_cmdline_len);
+	for (i = 0; i < rt_cmdline_len; i++)
+		line[i] = options[i];
+	rt_cmdline = line;
+
+	err = get_cmdline_with_print(
+			secure, bt_cmdline, bt_cmdline_len, rt_cmdline, rt_cmdline_len,
+			&cmdline, &cmdline_len);
+	if EFI_ERROR(err) {
+		if (cmdline != NULL) {
+			FreePool(cmdline);
+		}
+		return err;
+	}
 
 	/* if we are not in secure boot mode, or none was provided, accept a
 	 * custom command line and replace the built-in one */
-	if ((!secure || cmdline_len == 0) &&
-	    loaded_image->LoadOptionsSize > 0 &&
-	    use_shell_cmdline(cmdline_len) &&
-	    *(CHAR16 *)loaded_image->LoadOptions > 0x1F) {
-		CHAR16 *options;
-		CHAR8 *line;
-		UINTN i;
-
-		options = (CHAR16 *)loaded_image->LoadOptions;
-		cmdline_len = (loaded_image->LoadOptionsSize /
-			       sizeof(CHAR16)) * sizeof(CHAR8);
-		line = AllocatePool(cmdline_len);
-		for (i = 0; i < cmdline_len; i++)
-			line[i] = options[i];
-		cmdline = line;
-
-		err = check_cmdline(cmdline, cmdline_len);
-		if (EFI_ERROR(err)) {
-			if (secure) {
-				Print(L"Custom kernel command line rejected\n");
-				return err;
-			} else {
-				Print(L"Custom kernel would be rejected in secure mode\n");
-			}
-		}
-	}
 
 	/* export the device path we are started from, if it's not set yet */
 	if (efivar_get_raw(&loader_guid, L"LoaderDevicePartUUID", NULL,
 			   NULL) != EFI_SUCCESS)
 		if (disk_get_part_uuid(loaded_image->DeviceHandle,
-				       uuid) == EFI_SUCCESS)
+				uuid) == EFI_SUCCESS)
 			efivar_set(L"LoaderDevicePartUUID", uuid, FALSE);
 
 	/* if LoaderImageIdentifier is not set, assume the image with this stub
@@ -180,6 +179,8 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table)
 	err = linux_exec(image, cmdline, cmdline_len,
 			 (UINTN)loaded_image->ImageBase + addrs[1],
 			 (UINTN)loaded_image->ImageBase + addrs[2], szs[2]);
+
+	FreePool(cmdline);
 
 	Print(L"Execution of embedded linux image failed: %r\n", err);
 	uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);

@@ -4,6 +4,7 @@
 #include <efi.h>
 #include <wchar.h>
 UINTN  Print(IN CONST wchar_t *fmt, ...);
+UINTN  UnicodeSPrint(OUT CHAR16 *Str, IN UINTN StrSize, IN CONST wchar_t *fmt, ...);
 VOID   CopyMem(IN VOID *Dest, IN CONST VOID *Src, IN UINTN len);
 VOID * AllocatePool(UINTN Size);
 VOID   FreePool (IN VOID *p);
