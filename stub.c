@@ -119,6 +119,11 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table)
 		line[i] = options[i];
 	rt_cmdline = line;
 
+	// allow for rt_cmdline_len to have included the terminating null
+	if (rt_cmdline_len > 1 && rt_cmdline[rt_cmdline_len-1] == '\0') {
+		rt_cmdline_len--;
+	}
+
 	err = get_cmdline_with_print(
 			secure, bt_cmdline, bt_cmdline_len, rt_cmdline, rt_cmdline_len,
 			&cmdline, &cmdline_len);

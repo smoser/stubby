@@ -10,4 +10,6 @@ VOID * AllocatePool(UINTN Size);
 VOID   FreePool (IN VOID *p);
 UINTN  strncmpa(IN CONST CHAR8 *s1, IN CONST CHAR8 *s2, IN UINTN len);
 UINTN  strlena(IN CONST CHAR8 *s1);
+
+VOID   StatusToString(OUT CHAR16 *Buffer, IN EFI_STATUS Status);
 #endif
