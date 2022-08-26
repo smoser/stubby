@@ -197,11 +197,28 @@ EFI_STATUS get_cmdline(
 				goto out;
 			}
 
+
 			Print(L"OK, builtin=%a p-builtin=%d\n", builtin, (p-builtin));
 			Print(L"p=%a\n", p);
 
 			part1_len = (p - builtin);
 			part2_len = builtin_len - marker_len - part1_len;
+			// TODO: check that marker is complete token (surrouned by space or at beginning or end).
+			//
+			Print(L"p == builtin? %d\n", p == builtin);
+			if (p != builtin) {
+				Print(L"*(p-1): '%c'\n", *(p-1));
+			}
+			Print(L"part2_len = 0 ? %d\n", part2_len == 0);
+			Print(L"*(p + marker_len + 1) = '%c'\n", *(p + marker_len));
+
+
+			if (!((p == builtin || *(p-1) == ' ') &&
+				    (part2_len == 0 || *(p + marker_len) == ' '))) {
+				status = EFI_INVALID_PARAMETER;
+				UnicodeSPrint(errbuf, errbuf_len, L"%a is not a full token\n", marker);
+			}
+
 			CopyMem(part1, builtin, part1_len);
 			*(part1 + part1_len) = '\0';
 			CopyMem(part2, p + marker_len, part2_len);
@@ -212,6 +229,12 @@ EFI_STATUS get_cmdline(
 	if (strstra(part1, namespace) != NULL || strstra(part2, namespace) != NULL) {
 		status = EFI_INVALID_PARAMETER;
 		UnicodeSPrint(errbuf, errbuf_len, L"%a appears in builtin cmdline\n", namespace);
+		goto out;
+	}
+
+	if (strstra(runtime, namespace) != NULL) {
+		status = EFI_INVALID_PARAMETER;
+		UnicodeSPrint(errbuf, errbuf_len, L"%a appears in runtime cmdline\n", namespace);
 		goto out;
 	}
 
