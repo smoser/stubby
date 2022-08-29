@@ -154,8 +154,8 @@ EFI_STATUS get_cmdline(
 	EFI_STATUS status = EFI_SECURITY_VIOLATION;
 
 	CHAR16 *errbuf = NULL;
-	int errbuf_len = 255;
-	errbuf = AllocatePool(errbuf_len * sizeof(CHAR16));
+	int errbuf_buflen = 255;
+	errbuf = AllocatePool(errbuf_buflen * sizeof(CHAR16));
 	if (errbuf == NULL) {
 		status = EFI_OUT_OF_RESOURCES;
 		goto out;
@@ -175,6 +175,7 @@ EFI_STATUS get_cmdline(
 
 	*part1 = '\0';
 	*part2 = '\0';
+	*errbuf = '\0';
 	part1_len = 0;
 	part2_len = 0;
 
@@ -184,39 +185,33 @@ EFI_STATUS get_cmdline(
 			// there was no marker in builtin
 			if (runtime_len != 0) {
 				status = EFI_INVALID_PARAMETER;
-				UnicodeSPrint(errbuf, errbuf_len,
+				UnicodeSPrint(errbuf, errbuf_buflen,
 						L"runtime arguments cannot be given to non-empty builtin without marker\n");
 				goto out;
 			}
 		} else {
 			// builtin has a marker, check that only one.
-			if (strstra(builtin + marker_len, marker) != NULL) {
+			if (strstra(p + marker_len, marker) != NULL) {
 				status = EFI_INVALID_PARAMETER;
-				UnicodeSPrint(errbuf, errbuf_len,
-						L"%a appears more than once in builtin cmdline\n", marker);
+				UnicodeSPrint(errbuf, errbuf_buflen,
+						L"%a XXXX appears more than once in builtin cmdline\n", marker);
 				goto out;
 			}
 
-
-			Print(L"OK, builtin=%a p-builtin=%d\n", builtin, (p-builtin));
-			Print(L"p=%a\n", p);
-
 			part1_len = (p - builtin);
 			part2_len = builtin_len - marker_len - part1_len;
-			// TODO: check that marker is complete token (surrouned by space or at beginning or end).
-			//
-			Print(L"p == builtin? %d\n", p == builtin);
-			if (p != builtin) {
-				Print(L"*(p-1): '%c'\n", *(p-1));
-			}
-			Print(L"part2_len = 0 ? %d\n", part2_len == 0);
-			Print(L"*(p + marker_len + 1) = '%c'\n", *(p + marker_len));
 
+			// Print(L"p == builtin? %d\n", p == builtin);
+			// if (p != builtin) {
+			// 	Print(L"*(p-1): '%c'\n", *(p-1));
+			// }
+			// Print(L"part2_len is zero? %d\n", part2_len == 0);
+			// Print(L"*(p + marker_len + 1) = '%c'\n", *(p + marker_len));
 
 			if (!((p == builtin || *(p-1) == ' ') &&
-				    (part2_len == 0 || *(p + marker_len) == ' '))) {
+					(part2_len == 0 || *(p + marker_len) == ' '))) {
 				status = EFI_INVALID_PARAMETER;
-				UnicodeSPrint(errbuf, errbuf_len, L"%a is not a full token\n", marker);
+				UnicodeSPrint(errbuf, errbuf_buflen, L"%a is not a full token\n", marker);
 			}
 
 			CopyMem(part1, builtin, part1_len);
@@ -226,20 +221,23 @@ EFI_STATUS get_cmdline(
 		}
 	}
 
+	// namespace appeared in the builtin
 	if (strstra(part1, namespace) != NULL || strstra(part2, namespace) != NULL) {
 		status = EFI_INVALID_PARAMETER;
-		UnicodeSPrint(errbuf, errbuf_len, L"%a appears in builtin cmdline\n", namespace);
+		UnicodeSPrint(errbuf, errbuf_buflen, L"%a appears in builtin cmdline\n", namespace);
 		goto out;
 	}
 
+	// namespace appears in runtime
 	if (strstra(runtime, namespace) != NULL) {
 		status = EFI_INVALID_PARAMETER;
-		UnicodeSPrint(errbuf, errbuf_len, L"%a appears in runtime cmdline\n", namespace);
+		UnicodeSPrint(errbuf, errbuf_buflen, L"%a appears in runtime cmdline\n", namespace);
 		goto out;
 	}
 
-	Print(L"part1 = %a\n", part1);
-	Print(L"part2 = %a\n", part2);
+	// Print(L"part1 [%d] = '%a'\npart2 [%d] = '%a'\n", part1_len, part1, part2_len, part2);
+
+	// At this point, part1 and part2 are set so we can just concat part1, runtime, part2
 
 out:
 	if (errbuf != NULL && errbuf[0] == '\0') {
@@ -253,6 +251,7 @@ out:
 	if (part2 != NULL)
 		FreePool(part2);
 
+	*errmsg = errbuf;
 	return status;
 }
 

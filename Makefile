@@ -30,7 +30,7 @@ STUBBY_OBJS = \
 	stra.o \
 	kcmdline.o \
 
-TEST_EXES = test-cmdline
+TEST_EXES = test-cmdline test-get-cmdline
 TEST_OBJS = linux_efilib-lt.o kcmdline-lt.o stra-lt.o
 
 .PHONY: all
