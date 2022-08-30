@@ -47,13 +47,10 @@ BOOLEAN is_allowed(const CHAR8 *input) {
 
 // check cmdline to make sure it contains only allowed words.
 // return EFI_SUCCESS on safe, EFI_SECURITY_VIOLATION on unsafe;
-EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errmsg) {
+EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 *errmsg, UINTN errmsg_len) {
 	CHAR8 c = '\0';
 	CHAR8 *buf = NULL;
-	CHAR16 *errbuf = NULL;
-	int errbuf_len = (cmdline_len + 80);
 	CHAR8 *tokens[MAX_TOKENS];
-	*errmsg = NULL;
 	EFI_STATUS status = EFI_SUCCESS;
 	int i;
 	int start = -1;
@@ -64,12 +61,7 @@ EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errms
 		status = EFI_OUT_OF_RESOURCES;
 	}
 
-	errbuf = AllocatePool(errbuf_len * sizeof(CHAR16));
-	if (errbuf == NULL) {
-		status = EFI_OUT_OF_RESOURCES;
-		goto out;
-	}
-	errbuf[0] = '\0';
+	*errmsg = '\0';
 
 	CopyMem(buf, cmdline, cmdline_len);
 	buf[cmdline_len] = '\0';
@@ -83,13 +75,13 @@ EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errms
 	for (i = 0; i < cmdline_len; i++) {
 		c = buf[i];
 		if (c < 0x20 || c > 0x7e) {
-			UnicodeSPrint(errbuf, errbuf_len,
+			UnicodeSPrint(errmsg, errmsg_len,
 				L"Bad character 0x%02hhx in position %d: %a.\n", c, i, cmdline);
 			status = EFI_SECURITY_VIOLATION;
 			goto out;
 		}
 		if (i >= MAX_TOKENS) {
-			UnicodeSPrint(errbuf, errbuf_len, L"Too many tokens in cmdline.\n");
+			UnicodeSPrint(errmsg, errmsg_len, L"Too many tokens in cmdline.\n");
 			status = EFI_SECURITY_VIOLATION;
 			goto out;
 		}
@@ -115,23 +107,16 @@ EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errms
 
 	for (i=0; i < num_toks; i++) {
 		if (!is_allowed(tokens[i])) {
-			UnicodeSPrint(errbuf, errbuf_len, L"token not allowed: %a\n", tokens[i]);
+			UnicodeSPrint(errmsg, errmsg_len, L"token not allowed: %a\n", tokens[i]);
 			status = EFI_SECURITY_VIOLATION;
 		}
 	}
 
 out:
 
-
-
 	if (buf != NULL) {
 		FreePool(buf);
 	}
-	if (errbuf != NULL && errbuf[0] == '\0') {
-		FreePool(errbuf);
-		errbuf = NULL;
-	}
-	*errmsg = errbuf;
 	return status;
 }
 

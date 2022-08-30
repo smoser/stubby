@@ -6,8 +6,9 @@
 #include <stdlib.h>
 
 EFI_STATUS do_check_cmdline(const char* cmdline) {
-	CHAR16 *emsg = NULL;
-	return check_cmdline((unsigned char*)cmdline, strlen(cmdline), &emsg);
+	CHAR16 emsg[256];
+	UINTN emsg_len = sizeof(emsg) / sizeof(emsg[0]);
+	return check_cmdline((unsigned char*)cmdline, strlen(cmdline), emsg, emsg_len);
 }
 
 typedef struct {

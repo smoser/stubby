@@ -3,7 +3,7 @@
 
 #include <efi.h>
 
-EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 **errmsg);
+EFI_STATUS check_cmdline(CONST CHAR8 *cmdline, UINTN cmdline_len, CHAR16 *errmsg, UINTN errmsg_len);
 
 EFI_STATUS get_cmdline(
 	BOOLEAN secure,
