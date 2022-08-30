@@ -53,10 +53,12 @@ BOOLEAN do_get_cmdline(TestData td) {
 	UINTN found_len;
 	CHAR16 buf[64];
 
+	// Print(L"builtin [%d] = '%a'\nruntime [%d] = '%a'\n", td.builtin, strlen(td.builtin), td.runtime, strlen(td.runtime));
+	Print(L"builtin = '%a' (%d)\nruntime = '%a' (%d)\n", td.builtin, strlen(td.builtin), td.runtime, strlen(td.runtime));
 	status = get_cmdline(
 		td.secure, 
-		(CHAR8*) td.builtin, strlen(td.builtin),
-		(CHAR8*)td.runtime, strlen(td.runtime),
+		td.builtin, strlen(td.builtin),
+		td.runtime, strlen(td.runtime),
 		&found, &found_len,
 		&errmsg);
 

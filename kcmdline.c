@@ -138,6 +138,9 @@ EFI_STATUS get_cmdline(
 	UINTN part1_len, part2_len;
 	EFI_STATUS status = EFI_SECURITY_VIOLATION;
 
+	*cmdline = NULL;
+	*cmdline_len = 0;
+
 	CHAR16 *errbuf = NULL;
 	int errbuf_buflen = 255;
 	errbuf = AllocatePool(errbuf_buflen * sizeof(CHAR16));
@@ -220,9 +223,26 @@ EFI_STATUS get_cmdline(
 		goto out;
 	}
 
-	// Print(L"part1 [%d] = '%a'\npart2 [%d] = '%a'\n", part1_len, part1, part2_len, part2);
 
-	// At this point, part1 and part2 are set so we can just concat part1, runtime, part2
+	// At this point, part1 and part2 are set so we can just concatenate part1, runtime, part2
+
+	status = check_cmdline(runtime, runtime_len, errbuf, errbuf_buflen);
+
+	// EFI_SECURITY_VIOLATION is allowed if insecure boot, so continue on.
+	if ((status == EFI_SECURITY_VIOLATION && secure) || EFI_ERROR(status)) {
+		goto out;
+	}
+
+	UINTN clen = part1_len + runtime_len + part2_len;
+	CHAR8 *cbuf;
+	cbuf = AllocatePool(clen + 1);
+	CopyMem(cbuf, part1, part1_len);
+	CopyMem(cbuf+part1_len, runtime, runtime_len);
+	CopyMem(cbuf+part1_len+runtime_len, part2, part2_len);
+	*cmdline = cbuf;
+	*cmdline_len = clen;
+	Print(L"part1 [%d] = '%a'\npart2 [%d] = '%a'\nrtime [%d] = '%a'\n", part1_len, part1, part2_len, part2, runtime_len, runtime);
+	Print(L"cmdli [%d] = '%a'\n", *cmdline_len, *cmdline);
 
 out:
 	if (errbuf != NULL && errbuf[0] == '\0') {
